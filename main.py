@@ -42,12 +42,14 @@ COOKIE_ENVS = {
 
 # YouTube 在机房 IP 上常被判"疑似机器人"，多客户端轮试可以提高成功率
 YT_CLIENTS = (
-    None,
-    "tv,web_safari",
     "android_vr",
     "mweb,ios",
-    "web_embedded",
+    "tv,web_safari",
+    None,
 )
+
+# 这些协议拿到的是 HLS/DASH 索引而不是可下载的完整文件
+BAD_PROTO = ("m3u8", "m3u8_native", "hls", "dash", "http_dash_segments")
 
 
 def cookie_file_for(url: str) -> str | None:
@@ -180,15 +182,26 @@ def _ytdlp_once(url: str, client: str | None) -> dict[str, Any] | None:
     if "entries" in info:
         info = next((e for e in info["entries"] if e), {})
 
-    # 视频：优先带音频的 mp4
+    # 视频：优先"音画合一"的直链 mp4，排除 m3u8/dash 这类索引文件
     video = None
     formats = info.get("formats") or []
-    cands = [f for f in formats if f.get("vcodec") != "none" and f.get("url")]
-    if cands:
-        cands.sort(key=lambda f: (f.get("ext") != "mp4", -(f.get("height") or 0)))
-        video = cands[0]["url"]
-    if not video:
-        video = info.get("url")
+    direct = [
+        f for f in formats
+        if f.get("url")
+        and str(f.get("protocol") or "").split("+")[0] not in BAD_PROTO
+        and "manifest" not in f.get("url", "")
+    ]
+    muxed = [f for f in direct if f.get("vcodec") not in (None, "none") and f.get("acodec") not in (None, "none")]
+    vonly = [f for f in direct if f.get("vcodec") not in (None, "none")]
+    if muxed:
+        muxed.sort(key=lambda f: (f.get("ext") != "mp4", -(f.get("height") or 0)))
+        video = muxed[0]["url"]
+    elif vonly:
+        vonly.sort(key=lambda f: (f.get("ext") != "mp4", -(f.get("height") or 0)))
+        video = vonly[0]["url"]
+        info["_audio_only"] = True
+    if not video and (info.get("url") or "").startswith("http") and "manifest" not in info.get("url", ""):
+        video = info["url"]
 
     # 图集
     images = []
@@ -277,6 +290,39 @@ async def parse(url: str = Query(..., description="分享链接")):
 
     _cache[key] = (now, data)
     return data
+
+
+@app.get("/api/formats")
+def formats(url: str = Query(...), client: str = Query("")):
+    """诊断端点：列出该链接可用的所有格式（看有没有可直下的 mp4）"""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "socket_timeout": 20,
+        "http_headers": {"User-Agent": UA, "Referer": url},
+        "js_runtimes": {"deno": {}},
+    }
+    if client:
+        opts["extractor_args"] = {"youtube": {"player_client": [c.strip() for c in client.split(",")]}}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"[:400]}
+    rows = []
+    for f in (info.get("formats") or []):
+        rows.append({
+            "id": f.get("format_id"),
+            "ext": f.get("ext"),
+            "protocol": f.get("protocol"),
+            "height": f.get("height"),
+            "vcodec": (f.get("vcodec") or "")[:12],
+            "acodec": (f.get("acodec") or "")[:12],
+            "tbr": f.get("tbr"),
+            "url_head": (f.get("url") or "")[:60],
+        })
+    return {"title": info.get("title"), "count": len(rows), "formats": rows[:40]}
 
 
 @app.get("/api/debug")
