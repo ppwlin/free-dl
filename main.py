@@ -33,7 +33,21 @@ COOKIE_ENVS = {
     "bilibili.com": "BILI_COOKIE",
     "b23.tv": "BILI_COOKIE",
     "weibo.com": "WEIBO_COOKIE",
+    "youtube.com": "YOUTUBE_COOKIE",
+    "youtu.be": "YOUTUBE_COOKIE",
+    "instagram.com": "INSTAGRAM_COOKIE",
+    "x.com": "X_COOKIE",
+    "twitter.com": "X_COOKIE",
 }
+
+# YouTube 在机房 IP 上常被判"疑似机器人"，多客户端轮试可以提高成功率
+YT_CLIENTS = (
+    None,
+    "tv,web_safari",
+    "android_vr",
+    "mweb,ios",
+    "web_embedded",
+)
 
 
 def cookie_file_for(url: str) -> str | None:
@@ -118,6 +132,15 @@ LAST_ERROR: dict[str, str] = {}
 
 
 def ytdlp_parse(url: str) -> dict[str, Any] | None:
+    clients = YT_CLIENTS if ("youtube.com" in url or "youtu.be" in url) else (None,)
+    for client in clients:
+        res = _ytdlp_once(url, client)
+        if res:
+            return res
+    return None
+
+
+def _ytdlp_once(url: str, client: str | None) -> dict[str, Any] | None:
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -137,6 +160,8 @@ def ytdlp_parse(url: str) -> dict[str, Any] | None:
     ckh = cookie_header_for(url)
     if ckh and "http_headers" in opts:
         opts["http_headers"]["Cookie"] = ckh
+    if client:
+        opts["extractor_args"] = {"youtube": {"player_client": [c.strip() for c in client.split(",")]}}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
