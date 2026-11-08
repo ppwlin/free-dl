@@ -9,8 +9,10 @@
 """
 
 import ipaddress
+import os
 import re
 import socket
+import tempfile
 import time
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse
@@ -21,6 +23,54 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 app = FastAPI(title="Free Downloader API", version="1.0")
+
+# ---- Cookie 支持（可选，通过环境变量注入，用于需要登录态的平台）----
+COOKIE_ENVS = {
+    "douyin.com": "DOUYIN_COOKIE",
+    "iesdouyin.com": "DOUYIN_COOKIE",
+    "xiaohongshu.com": "XHS_COOKIE",
+    "xhslink.com": "XHS_COOKIE",
+    "bilibili.com": "BILI_COOKIE",
+    "b23.tv": "BILI_COOKIE",
+    "weibo.com": "WEIBO_COOKIE",
+}
+
+
+def cookie_file_for(url: str) -> str | None:
+    """按目标站点从环境变量取 cookie，写成 Netscape 格式临时文件"""
+    host = (urlparse(url).hostname or "").lower()
+    env_name = None
+    for dom, ev in COOKIE_ENVS.items():
+        if host.endswith(dom):
+            env_name = ev
+            break
+    if not env_name:
+        return None
+    raw = (os.environ.get(env_name) or "").strip()
+    if not raw:
+        return None
+    # 兼容用户直接粘贴 "a=1; b=2" 或解码后的整段 cookie 串
+    pairs = [p.strip() for p in raw.split(";") if "=" in p]
+    if not pairs:
+        return None
+    domain = "." + host.split(".")[-2] + "." + host.split(".")[-1] if host.count(".") >= 1 else host
+    lines = ["# Netscape HTTP Cookie File"]
+    for p in pairs:
+        k, v = p.split("=", 1)
+        lines.append("\t".join([domain, "TRUE", "/", "FALSE", "0", k.strip(), v.strip()]))
+    fd, path = tempfile.mkstemp(prefix="ck_", suffix=".txt")
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
+
+
+def cookie_header_for(url: str) -> str | None:
+    host = (urlparse(url).hostname or "").lower()
+    for dom, ev in COOKIE_ENVS.items():
+        if host.endswith(dom):
+            raw = (os.environ.get(ev) or "").strip()
+            return raw or None
+    return None
 
 UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
@@ -64,6 +114,9 @@ async def resolve_short(url: str) -> str:
         return url
 
 
+LAST_ERROR: dict[str, str] = {}
+
+
 def ytdlp_parse(url: str) -> dict[str, Any] | None:
     opts = {
         "quiet": True,
@@ -71,14 +124,31 @@ def ytdlp_parse(url: str) -> dict[str, Any] | None:
         "skip_download": True,
         "noplaylist": True,
         "socket_timeout": 20,
-        "extractor_retries": 1,
+        "extractor_retries": 2,
+        "retries": 3,
         "http_headers": {"User-Agent": UA, "Referer": url},
+        # YouTube 需要 JS 运行时解签名，镜像内已装 deno
+        "js_runtimes": {"deno": {}},
+        "remote_components": {"ejs:github"},
     }
+    ck = cookie_file_for(url)
+    if ck:
+        opts["cookiefile"] = ck
+    ckh = cookie_header_for(url)
+    if ckh and "http_headers" in opts:
+        opts["http_headers"]["Cookie"] = ckh
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-    except Exception:
+    except Exception as e:
+        LAST_ERROR[url] = f"{type(e).__name__}: {e}"[:600]
         return None
+    finally:
+        if ck and os.path.exists(ck):
+            try:
+                os.remove(ck)
+            except Exception:
+                pass
 
     if not info:
         return None
@@ -158,7 +228,6 @@ async def parse(url: str = Query(..., description="分享链接")):
     hit = _cache.get(key)
     if hit and now - hit[0] < CACHE_TTL:
         return hit[1]
-
     real = await resolve_short(url)
     data = ytdlp_parse(real) or html_parse(real)
     if not data:
@@ -183,6 +252,23 @@ async def parse(url: str = Query(..., description="分享链接")):
 
     _cache[key] = (now, data)
     return data
+
+
+@app.get("/api/debug")
+def debug(url: str = Query(...)):
+    """诊断端点：直接返回 yt-dlp 的原始报错，便于定位失败原因"""
+    real_yt = None
+    try:
+        real_yt = ytdlp_parse(url)
+    except Exception as e:
+        LAST_ERROR[url] = f"{type(e).__name__}: {e}"[:600]
+    return {
+        "url": url,
+        "ytdlp_ok": bool(real_yt),
+        "ytdlp_error": LAST_ERROR.get(url, ""),
+        "cookie_injected": bool(cookie_header_for(url)),
+        "js_runtimes": "deno",
+    }
 
 
 @app.get("/api/dl")
