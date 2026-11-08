@@ -2,7 +2,7 @@
 
 目标：复制链接 → 自动解析 → 存相册。和原版「全网视图下载」体验一致，但无次数限制（走你自己的服务器）。
 
-先把 `https://你的域名` 换成部署后拿到的真实域名，例如 `https://free-dl-production.up.railway.app`。
+先把 `https://web-production-5e818.up.railway.app` 换成部署后拿到的真实域名，例如 `https://free-dl-production.up.railway.app`。
 
 ## 一、新建快捷指令
 
@@ -23,8 +23,8 @@
 
 ### 3. 请求解析接口
 动作：`获取 URL 内容`
-- URL：`https://你的域名/api/parse?url=` 后接「URL」变量
-  - 在 URL 框里写：`https://你的域名/api/parse?url=`，然后插入变量 `URL`
+- URL：`https://web-production-5e818.up.railway.app/api/parse?url=` 后接「URL」变量
+  - 在 URL 框里写：`https://web-production-5e818.up.railway.app/api/parse?url=`，然后插入变量 `URL`
   - 更稳妥：先加一个 `文本` 动作拼成完整地址，再让 `获取 URL 内容` 取这个文本
 - 方法：`GET`
 - 请求头：`User-Agent` = `Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15`
@@ -41,13 +41,13 @@
 - 条件：`type` 等于 `video`
 
 **如果成立：**
-- `获取 URL 内容`，URL = `https://你的域名` + `video_url`
+- `获取 URL 内容`，URL = `https://web-production-5e818.up.railway.app` + `video_url`
   - 方法 GET，输出 `文件`
 - `存储到相簿`
 
 **否则：**
 - `重复` 遍历 `image_urls`
-  - `获取 URL 内容`，URL = `https://你的域名` + 当前重复项，输出 `文件`
+  - `获取 URL 内容`，URL = `https://web-production-5e818.up.railway.app` + 当前重复项，输出 `文件`
   - `存储到相簿`
 - `结束重复`
 

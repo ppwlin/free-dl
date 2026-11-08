@@ -40,7 +40,7 @@ curl "http://127.0.0.1:8000/api/parse?url=<把分享链接放这里>"
 1. 把 `free-dl-backend` 整个目录推到你的 GitHub 仓库；
 2. Railway → New Project → Deploy from GitHub repo，选中该仓库；
 3. Railway 会自动识别 `Dockerfile` 构建；
-4. Settings → 生成公开域名，得到形如 `https://xxx.up.railway.app`。
+4. Settings → 生成公开域名，得到形如 `https://web-production-5e818.up.railway.app`。
 
 ### 方案 2：Zeabur / Render
 - Zeabur：New Project → 部署 Git 仓库，选择 Docker 类型即可；
@@ -60,7 +60,7 @@ docker run -d -p 8000:8000 --name free-dl free-dl
 
 核心就三步：
 1. 获取剪贴板 → 取 URL；
-2. `获取 URL 内容`请求 `https://你的域名/api/parse?url=<剪贴板链接>`，类型选 JSON；
+2. `获取 URL 内容`请求 `https://web-production-5e818.up.railway.app/api/parse?url=<剪贴板链接>`，类型选 JSON；
 3. 按 `type` 分支：video 走 `保存到相册`，images 走 `重复`逐张保存。
 
 ## 四、常见问题
