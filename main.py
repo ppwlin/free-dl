@@ -202,6 +202,9 @@ def _ytdlp_once(url: str, client: str | None) -> dict[str, Any] | None:
         info["_audio_only"] = True
     if not video and (info.get("url") or "").startswith("http") and "manifest" not in info.get("url", ""):
         video = info["url"]
+    if not video and formats:
+        # 只有 HLS/DASH 索引可选 → 交给 /api/dl 用 ffmpeg 合并后再下发
+        info["_need_merge"] = True
 
     # 图集
     images = []
@@ -271,14 +274,21 @@ async def parse(url: str = Query(..., description="分享链接")):
     if not data:
         raise HTTPException(422, "解析失败：链接可能需要登录、已删除，或平台暂不支持")
 
-    if data.get("video") and not _ok_url(data["video"]):
+    if data.get("video") and not data["video"].startswith("__merge__:") and not _ok_url(data["video"]):
         data["video"] = None
     data["images"] = [i for i in data["images"] if _ok_url(i)]
+
+    if not data.get("video") and data.get("_need_merge"):
+        # 没有可直接下载的 mp4：交给 /api/dl 用 ffmpeg 合并后再下发
+        data["video"] = f"__merge__:{real}"
 
     if not data.get("video") and not data.get("images"):
         raise HTTPException(422, "未找到可下载的媒体文件")
 
     def proxied(u: str) -> str:
+        if u.startswith("__merge__:"):
+            src = u[len("__merge__:"):]
+            return f"/api/dl?merge=1&u={quote(src, safe='')}"
         return f"/api/dl?u={quote(u, safe='')}&r={quote(data['referer'], safe='')}"
 
     data["type"] = "video" if data.get("video") else "images"
@@ -342,8 +352,74 @@ def debug(url: str = Query(...)):
     }
 
 
+def ytdlp_download(url: str, fmt: str = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b") -> tuple[str, str] | None:
+    """需要音画合并时（YouTube 等）下载到临时文件，返回 (路径, 文件名)"""
+    import glob
+    outdir = tempfile.mkdtemp(prefix="dl_")
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": fmt,
+        "outtmpl": os.path.join(outdir, "%(title).80s-%(id)s.%(ext)s"),
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "socket_timeout": 25,
+        "http_headers": {"User-Agent": UA, "Referer": url},
+        "js_runtimes": {"deno": {}},
+        "retries": 3,
+    }
+    ck = cookie_file_for(url)
+    if ck:
+        opts["cookiefile"] = ck
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            path = ydl.prepare_filename(info)
+            if not os.path.exists(path):
+                cands = [p for p in glob.glob(os.path.join(outdir, "*")) if not p.endswith(".part")]
+                if not cands:
+                    return None
+                path = max(cands, key=os.path.getsize)
+        return path, os.path.basename(path)
+    except Exception as e:
+        LAST_ERROR[url + "#merge"] = f"{type(e).__name__}: {e}"[:600]
+        return None
+
+
 @app.get("/api/dl")
-def download(u: str = Query(...), r: str = Query("")):
+def download(u: str = Query(...), r: str = Query(""), merge: int = 0):
+    if merge:
+        # 服务端下载并合并音画，随后边读边发，发完即删
+        src = u if u.lower().startswith("http") else "https://" + u
+        if not _ok_url(src):
+            raise HTTPException(400, "非法地址")
+        got = ytdlp_download(src)
+        if not got:
+            raise HTTPException(502, f"下载失败：{LAST_ERROR.get(src + '#merge','')}")
+
+        path, fname = got
+
+        def itf():
+            try:
+                with open(path, "rb") as f:
+                    while True:
+                        chunk = f.read(256 * 1024)
+                        if not chunk:
+                            break
+                        yield chunk
+            finally:
+                try:
+                    os.remove(path)
+                    os.rmdir(os.path.dirname(path))
+                except Exception:
+                    pass
+
+        return StreamingResponse(
+            itf(),
+            media_type="video/mp4",
+            headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(fname)}"},
+        )
+
     if not _ok_url(u):
         raise HTTPException(400, "非法地址")
 

@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates unzip \
+ && apt-get install -y --no-install-recommends curl ca-certificates unzip ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 
 # Deno：yt-dlp 解析 YouTube 签名所需的 JS 运行时
